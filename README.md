@@ -119,7 +119,10 @@ dsh 进程
 ## 本地开发
 
 ```sh
-# 把一个 checkout 直接链进 profile（推荐，peer 依赖由 dsh 安装解析）
+# 先给 checkout 装好运行时依赖（link 安装不会替链接包安装 dependencies）
+npm install --registry https://registry.npmjs.org
+
+# 把 checkout 链进 profile
 dsh plugin --profile web add -w /absolute/path/to/dsh-sts2-plugin
 dsh --profile web --dump-config   # 应出现 # == dsh-sts2 层
 
@@ -127,7 +130,8 @@ dsh --profile web --dump-config   # 应出现 # == dsh-sts2 层
 npm test
 ```
 
-> `--patch` overlay 也能加载本地 `index.js`，但要求模块解析能找到 `@deepseek-ai/dsh-*` peer；从独立 checkout 使用时更容易踩坑，优先用上面的 link 方式。
+> 发布后的 npm 安装由 pnpm 正常安装 `dependencies`，不需要手动 `npm install`。
+> `--patch` overlay 也能加载本地 `index.js`，但要求模块解析能找到 `@deepseek-ai/dsh-*`；优先用上面的 link 方式。
 
 ## 排障
 
@@ -139,6 +143,26 @@ npm test
 | `solo_climb` | 关闭「AI 独自爬塔」 |
 | 工具列表里没有 `sts2_*` | 插件没装进当前 profile，或 dsh 没重启 |
 | 卡在某个 Mod 自定义界面 | 该界面暂不支持，手动处理后继续 |
+
+## 发布
+
+仓库自带 `.github/workflows/publish.yml`：推送 `v*` tag 时运行测试并发布到 npm。
+
+```sh
+npm version patch        # 0.1.0 -> 0.1.1，生成 tag
+git push --follow-tags
+```
+
+首次使用前在 GitHub 仓库设置里添加 `NPM_TOKEN` secret（npmjs.org 的 Automation token）。
+
+也可以手动发布：
+
+```sh
+npm login --registry https://registry.npmjs.org
+npm publish --registry https://registry.npmjs.org
+```
+
+`package.json` 的 `publishConfig.registry` 已固定到 npmjs.org，不受本机 npmmirror 镜像配置影响。
 
 ## 安全
 

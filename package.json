@@ -42,18 +42,6 @@
     "dsh": ">=0.1.5-rc.1",
     "node": ">=22"
   },
-  "peerDependencies": {
-    "@deepseek-ai/dsh-attachment": "^0.1.5-rc.1",
-    "@deepseek-ai/dsh-llm": "^0.1.5-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.2"
-  },
-  "devDependencies": {
-    "@deepseek-ai/dsh-attachment": "^0.1.5-rc.1",
-    "@deepseek-ai/dsh-llm": "^0.1.5-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.2"
-  },
   "scripts": {
     "test": "node --test",
     "check": "node --check index.js && node --check lib/bridge.js && node --test",
@@ -62,5 +50,10 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-attachment": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.1"
   }
 }

@@ -6,7 +6,6 @@
  * by queuing follow-up messages whenever the game is waiting for input.
  */
 
-import Schema from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
@@ -15,13 +14,27 @@ import { Bridge } from './lib/bridge.js'
 export const name = 'sts2'
 export const inject = ['tools']
 
-export const Config = Schema.object({
-  host: Schema.string().default('127.0.0.1'),
-  port: Schema.number().min(1).max(65535).default(26333),
-  token: Schema.string().default(''),
-  autoPlayPollMs: Schema.number().min(200).max(5000).default(700),
-  requestTimeoutMs: Schema.number().min(1000).max(120000).default(60000),
-})
+const DEFAULT_CONFIG = {
+  host: '127.0.0.1',
+  port: 26333,
+  token: '',
+  autoPlayPollMs: 700,
+  requestTimeoutMs: 60000,
+}
+
+function normalizeConfig(config) {
+  const merged = { ...DEFAULT_CONFIG, ...(config ?? {}) }
+  const port = Number(merged.port)
+  const poll = Number(merged.autoPlayPollMs)
+  const timeout = Number(merged.requestTimeoutMs)
+  return {
+    host: String(merged.host || DEFAULT_CONFIG.host),
+    port: Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_CONFIG.port,
+    token: String(merged.token ?? ''),
+    autoPlayPollMs: Number.isFinite(poll) ? Math.min(Math.max(poll, 200), 5000) : DEFAULT_CONFIG.autoPlayPollMs,
+    requestTimeoutMs: Number.isFinite(timeout) ? Math.min(Math.max(timeout, 1000), 120000) : DEFAULT_CONFIG.requestTimeoutMs,
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -50,9 +63,10 @@ function textTool(toolName, description, parameters, options = {}) {
   })
 }
 
-export function apply(ctx, config) {
+export function apply(ctx, rawConfig) {
+  const config = normalizeConfig(rawConfig)
   const bridge = new Bridge(config)
-  const pollMs = config.autoPlayPollMs || 700
+  const pollMs = config.autoPlayPollMs
 
   // ---- Autoplay -----------------------------------------------------------
 
