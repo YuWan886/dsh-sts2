@@ -1,0 +1,66 @@
+{
+  "name": "dsh-sts2",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: read and play Slay the Spire 2 through the AiTeammate external-agent bridge.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./lib/bridge.js": "./lib/bridge.js"
+  },
+  "files": [
+    "index.js",
+    "lib/bridge.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "author": "YuWan_SAMA",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YuWan886/dsh-sts2.git"
+  },
+  "homepage": "https://github.com/YuWan886/dsh-sts2#readme",
+  "bugs": {
+    "url": "https://github.com/YuWan886/dsh-sts2/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "slay-the-spire-2",
+    "sts2",
+    "mcp",
+    "agent"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": ">=0.1.5-rc.1",
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-attachment": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-attachment": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check index.js && node --check lib/bridge.js && node --test",
+    "prepack": "node --check index.js && node --check lib/bridge.js && node --test"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

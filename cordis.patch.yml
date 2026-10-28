@@ -1,0 +1,9 @@
+- insert:
+    - id: sts2
+      name: 'dsh-sts2'
+      config:
+        host: '127.0.0.1'
+        port: 26333
+        token: ''
+        autoPlayPollMs: 700
+        requestTimeoutMs: 60000
