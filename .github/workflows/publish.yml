@@ -12,13 +12,18 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Must match the environment configured in the npm Trusted Publisher settings.
+    environment: npm
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing requires npm 11.5.1+.
+      - name: Upgrade npm
+        run: npm install -g npm@^11.5.1
 
       - name: Verify tag matches package version
         run: |
@@ -31,7 +36,6 @@ jobs:
       - name: Test
         run: npm test
 
+      # Auth and provenance both come from the OIDC token; no NPM_TOKEN needed.
       - name: Publish to npm
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
