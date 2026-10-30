@@ -35,7 +35,36 @@ const DEFAULT_CONFIG = {
   token: '',
   autoPlayPollMs: 700,
   requestTimeoutMs: 60000,
+  autoTakeover: true,
+  takeoverPollMs: 4000,
+  takeoverCwd: '',
 }
+
+/**
+ * How long this process must be silent before the take-over poller treats the run as unmanaged.
+ *
+ * The game only offers an invitation after 15 s without a single non-passive request
+ * (`AgentTakeoverInvite.DrivingIdleSeconds`), so a loop that is really driving the run answers
+ * every poll with `already_driving` anyway. Staying quiet a little before that keeps the poller
+ * from burning a claim (3 per run, 60 s each) on a driver that is merely mid-turn.
+ */
+const DRIVER_QUIET_MS = 10_000
+
+/**
+ * A driver that is still "running a turn" is not stolen from until it has been silent this long:
+ * its in-flight turn would otherwise keep acting on the game right after the hand-over.
+ */
+const STUCK_DRIVER_MS = 90_000
+
+/**
+ * Producer identity for every message this plugin injects.
+ *
+ * The session format has no catch-all `plugin` source kind: each producer names itself, and the
+ * v3→v4 migration derives `plugin:<name>` for third-party plugins — the same kind our historical
+ * rows already carry. Writing the retired `{kind:'plugin'}` shape makes the stored session fail
+ * to load with "format v4 message requires a producer-owned source kind".
+ */
+const PLUGIN_SOURCE = Object.freeze({ kind: 'plugin:sts2' })
 
 /**
  * Mark one field editable without restarting the plugin.
@@ -67,6 +96,9 @@ export const Config =
         token: volatileField(Schema.string().default(DEFAULT_CONFIG.token)),
         autoPlayPollMs: Schema.number().default(DEFAULT_CONFIG.autoPlayPollMs),
         requestTimeoutMs: Schema.number().default(DEFAULT_CONFIG.requestTimeoutMs),
+        autoTakeover: Schema.boolean().default(DEFAULT_CONFIG.autoTakeover),
+        takeoverPollMs: Schema.number().default(DEFAULT_CONFIG.takeoverPollMs),
+        takeoverCwd: volatileField(Schema.string().default(DEFAULT_CONFIG.takeoverCwd)),
       })
 
 /**
@@ -90,13 +122,93 @@ export function normalizeConfig(config) {
   const port = Number(read('port'))
   const poll = Number(read('autoPlayPollMs'))
   const timeout = Number(read('requestTimeoutMs'))
+  const takeoverPoll = Number(read('takeoverPollMs'))
   return {
     host: String(read('host') || DEFAULT_CONFIG.host),
     port: Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_CONFIG.port,
     token: String(read('token') ?? ''),
     autoPlayPollMs: Number.isFinite(poll) ? Math.min(Math.max(poll, 200), 5000) : DEFAULT_CONFIG.autoPlayPollMs,
     requestTimeoutMs: Number.isFinite(timeout) ? Math.min(Math.max(timeout, 1000), 120000) : DEFAULT_CONFIG.requestTimeoutMs,
+    autoTakeover: read('autoTakeover') !== false,
+    takeoverPollMs: Number.isFinite(takeoverPoll)
+      ? Math.min(Math.max(takeoverPoll, 1000), 30000)
+      : DEFAULT_CONFIG.takeoverPollMs,
+    takeoverCwd: String(read('takeoverCwd') ?? '').trim(),
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auto takeover
+// ---------------------------------------------------------------------------
+
+/**
+ * Open a conversation inside the running dsh and hand the game to it.
+ *
+ * `createSessionInProcess()` goes through the same Session Controller the Web UI uses when the
+ * player clicks "new chat", so the result is an ordinary conversation: it shows up in the
+ * workspace, it streams live, and the player can start typing in it at any point. Profiles that
+ * expose neither that controller nor the agent service (headless, ACP) cannot be taken over
+ * programmatically and fail soft, which is why the caller treats that message as "unsupported"
+ * instead of retrying.
+ */
+async function openTakeoverConversation(ctx, cfg, invite, logger) {
+  const cwd = String(cfg.takeoverCwd || invite.workspace || '').trim()
+  if (!cwd) throw new Error('no workspace for the take-over conversation')
+
+  const agent = await createSessionInProcess(ctx, cwd)
+
+  // Group the conversation under the workspace so it sits where the player expects it.
+  try {
+    const registry = ctx.get('workspaceRegistry', false)
+    if (typeof registry?.create === 'function') {
+      const workspace = await registry.create(cwd)
+      await workspace.attachSession(agent.id)
+    }
+  } catch (error) {
+    logger?.info?.(`take-over workspace attach skipped: ${String(error)}`)
+  }
+
+  const text = String(invite.prompt ?? '').trim() ||
+    'The game is waiting for you. Use the sts2_* tools to take over the AI teammate.'
+  agent.followup(createUserMessage({
+    content: [{ type: 'text', text }],
+    source: PLUGIN_SOURCE,
+  }))
+
+  return agent
+}
+
+/**
+ * Create an ordinary conversation in this dsh process.
+ *
+ * Preferred path is the Session Controller the Web UI itself calls, because it resolves the
+ * session's default model, preset and provenance exactly like a click on "new chat". A build that
+ * exposes only the lower-level `agents` service still works through `agents.create()` with the
+ * remembered default route.
+ */
+async function createSessionInProcess(ctx, cwd) {
+  const controller = ctx.get('sessionController', false)
+  if (typeof controller?.agents?.createSession === 'function') {
+    const created = await controller.agents.createSession({ cwd, reusable: () => false })
+    if (created?.agent) return created.agent
+  }
+
+  const agents = ctx.get('agents', false)
+  if (typeof agents?.create !== 'function')
+    throw new Error('this dsh build has no session controller')
+
+  const selection = ctx.get('agentDefaultModel', false)?.currentSelection?.()
+  const sessionId = `session-${globalThis.crypto.randomUUID()}`
+  const handle = await agents.create({
+    sessionId,
+    meta: { cwd },
+    ...(selection?.provider && selection?.model
+      ? { agentOptions: { provider: selection.provider, model: selection.model } }
+      : {}),
+  })
+  if (!handle?.agent)
+    throw new Error('session creation returned no agent')
+  return handle.agent
 }
 
 // ---------------------------------------------------------------------------
@@ -211,12 +323,15 @@ export function apply(ctx, rawConfig) {
     busy: false,
     lastToken: '',
     lastPromptAt: 0,
+    /** Last moment this process spoke to the game; drives the take-over "is anyone driving?" test. */
+    lastActivityAt: 0,
 
     start(agent) {
       this.stop()
       this.agent = agent
       this.lastToken = ''
       this.lastPromptAt = 0
+      this.lastActivityAt = Date.now()
       this.timer = setInterval(() => { void this.tick() }, pollMs)
       void this.tick()
     },
@@ -239,8 +354,12 @@ export function apply(ctx, rawConfig) {
       try {
         const result = await bridge.call('sts2_state', {}, { timeoutMs: 8000 })
         const state = JSON.parse(result.text)
-        if (state.phase === 'game_over' || state.phase === 'no_run') {
+        // Leaving the run (game over, back at the main menu, save loaded away) ends the loop.
+        // Polling an empty menu keeps the bridge "busy" for the game and would hide both the next
+        // take-over invitation and the silence fallback, so stop instead of ticking forever.
+        if (state.phase === 'game_over' || state.phase === 'no_run' || state.phase === 'menu') {
           this.stop()
+          logger?.info?.(`autoplay stopped (${state.phase})`)
           return
         }
         if (!state.actionable) return
@@ -265,13 +384,110 @@ export function apply(ctx, rawConfig) {
 
         agent.followup(createUserMessage({
           content: [{ type: 'text', text: prompt }],
-          source: { kind: 'plugin', plugin: 'sts2' },
+          source: PLUGIN_SOURCE,
         }))
       } catch {
         // The game may be closed, still loading, or between rooms; try again next tick.
       } finally {
         this.busy = false
       }
+    },
+  }
+
+  // Traffic from this process is what makes the game treat the run as driven (`ClientIdleSeconds`).
+  // Track it so the take-over poller can tell a live driver from a loop that went quiet, and keep
+  // the poller's own invitation requests out of the count — the game treats them as passive too.
+  bridge.onRequest = (method) => {
+    if (method !== 'sts2_takeover') autoplay.lastActivityAt = Date.now()
+  }
+
+  // ---- Auto takeover ------------------------------------------------------
+  // A multiplayer run that has an AI teammate still needs a driver. The game offers an invitation
+  // on its bridge (`sts2_takeover`) once nothing has played the run for a while; claiming it opens
+  // a real conversation here, in this dsh process and in the configured workspace, so the player no
+  // longer has to open a chat and type "play Slay the Spire 2" by hand.
+  //
+  // Exactly one conversation drives the run. While this process is really driving, the game answers
+  // `already_driving` and a claim would only waste one of the three invitations the run allows, so
+  // the poller stays quiet as long as the driver is alive. Once that driver goes quiet the
+  // invitation is a hand-over instead of a second driver: the fresh conversation is opened first and
+  // the stale loop is retired right after it exists. That is also what keeps a forgotten autoplay
+  // loop from owning the game for the rest of the process' life.
+  const takeover = {
+    timer: null,
+    busy: false,
+    unsupported: false,
+    done: new Set(),
+
+    start() {
+      if (this.timer) return
+      const cfg = normalizeConfig(liveConfig())
+      this.timer = setInterval(() => { void this.tick() }, cfg.takeoverPollMs)
+      this.timer.unref?.()
+    },
+
+    stop() {
+      if (this.timer) clearInterval(this.timer)
+      this.timer = null
+      this.busy = false
+    },
+
+    /**
+     * Ask the game for the invitation and, when it takes, open the conversation that drives it.
+     * Answers `{opened, agent, runToken, reason, error}`; `reason` is the game's refusal
+     * (`already_driving`, `warmup`, `claimed`, …) or one of ours (`busy`, `already_opened`).
+     */
+    async claim() {
+      if (this.busy) return { opened: false, reason: 'busy' }
+
+      this.busy = true
+      try {
+        const cfg = normalizeConfig(liveConfig())
+        const result = await bridge.call('sts2_takeover', {}, { timeoutMs: 4000 })
+        const invite = JSON.parse(result.text)
+        if (invite?.take !== true) return { opened: false, reason: String(invite?.reason ?? 'no_invite') }
+
+        const runToken = String(invite.run_token ?? '')
+        if (runToken && this.done.has(runToken)) return { opened: false, reason: 'already_opened' }
+
+        const agent = await openTakeoverConversation(ctx, cfg, invite, logger)
+        if (runToken) this.done.add(runToken)
+        // The previous loop had already been silent long enough for the game to offer the run, so
+        // the fresh conversation is the driver now. Retire it only after the new one exists: a
+        // failed creation must not leave the run without anyone playing it.
+        if (autoplay.timer) {
+          autoplay.stop()
+          logger?.info?.('take-over retired the previous autoplay loop')
+        }
+        logger?.info?.(`take-over conversation ${agent?.id ?? '?'} started for run ${runToken.slice(0, 8) || '?'}`)
+        return { opened: true, agent, runToken }
+      } catch (error) {
+        if (String(error).includes('no session controller')) {
+          this.unsupported = true
+          logger?.info?.('auto take-over disabled: this dsh build has no session controller')
+          return { opened: false, reason: 'unsupported' }
+        }
+        logger?.warn?.(`take-over skipped: ${String(error)}`)
+        return { opened: false, reason: 'error', error }
+      } finally {
+        this.busy = false
+      }
+    },
+
+    async tick() {
+      const cfg = normalizeConfig(liveConfig())
+      if (!cfg.autoTakeover || this.busy || this.unsupported || !bridge.isConnected()) return
+
+      if (autoplay.timer) {
+        const quietMs = Date.now() - autoplay.lastActivityAt
+        // A live loop answers every invitation with "already_driving"; do not poll while it drives.
+        if (quietMs < DRIVER_QUIET_MS) return
+        // A conversation in the middle of a turn would keep acting after the hand-over; only take
+        // the run away from it once it has been silent long enough to count as dead.
+        if (autoplay.agent?.status !== 'idle' && quietMs < STUCK_DRIVER_MS) return
+      }
+
+      await this.claim()
     },
   }
 
@@ -285,9 +501,12 @@ export function apply(ctx, rawConfig) {
         .catch(() => { /* game not running yet */ })
     }, 1500)
 
+    takeover.start()
+
     return () => {
       clearTimeout(probe)
       clearInterval(retryTimer)
+      takeover.stop()
       autoplay.stop()
       bridge.dispose()
     }
@@ -299,6 +518,26 @@ export function apply(ctx, rawConfig) {
 
   // ---- Read tools ---------------------------------------------------------
 
+  /** Read the snapshot once; throws when the game cannot be reached or refused. */
+  async function readState(signal, timeoutMs = 8000) {
+    const result = await bridge.call('sts2_state', {}, { signal, timeoutMs })
+    return JSON.parse(result.text)
+  }
+
+  /** One line about where the player is, shared by the status report and the autoplay tool. */
+  function runSummary(state) {
+    if (state?.run) {
+      const run = state.run
+      return `${run.character ?? '?'}, act ${run.act}, floor ${run.floor}, ` +
+        `HP ${run.hp}/${run.max_hp}, ${run.gold} gold`
+    }
+    if (state?.menu) {
+      return `main menu (${state.menu.characters?.length ?? 0} characters, ` +
+        `continue: ${state.menu.can_continue ? 'yes' : 'no'})`
+    }
+    return 'no run in progress'
+  }
+
   async function connectionReport(signal, timeoutMs) {
     try {
       const hello = JSON.parse((await bridge.call('sts2_hello', {}, { signal, timeoutMs })).text)
@@ -308,19 +547,12 @@ export function apply(ctx, rawConfig) {
       let controlled = 'none'
       let decision = ''
       try {
-        const state = JSON.parse((await bridge.call('sts2_state', {}, { signal, timeoutMs })).text)
+        const state = await readState(signal, timeoutMs)
         phase = state.phase ?? 'unknown'
         actionable = state.actionable === true
         controlled = state.controlled?.kind ?? (state.phase === 'ai_decision' || state.phase === 'ai_busy' ? 'ai' : 'local')
         decision = state.decision ? `${state.decision.kind} (${state.decision.id})` : ''
-        if (state.run) {
-          const run = state.run
-          summary = `${run.character ?? '?'}, act ${run.act}, floor ${run.floor}, ` +
-            `HP ${run.hp}/${run.max_hp}, ${run.gold} gold`
-        } else if (state.menu) {
-          summary = `main menu (${state.menu.characters?.length ?? 0} characters, ` +
-            `continue: ${state.menu.can_continue ? 'yes' : 'no'})`
-        }
+        summary = runSummary(state)
       } catch (error) {
         summary = `state unavailable: ${error.message}`
       }
@@ -399,6 +631,16 @@ export function apply(ctx, rawConfig) {
       detail: { type: 'string', enum: ['brief', 'full'], description: 'Pile detail level.' },
     },
     { bridge, timeoutMs: 20000 },
+  ))
+
+  ctx.tools.register(textTool(
+    'sts2_set_nickname',
+    'Change the AI teammate\'s display nickname (nameplate, chat, prompts and run history). ' +
+    'Pass an empty name to go back to the active personality\'s name. Works in read-only mode too.',
+    {
+      name: { type: 'string', required: true, description: 'New nickname, at most 24 characters.' },
+    },
+    { bridge, timeoutMs: 15000 },
   ))
 
   ctx.tools.register(defineTool({
@@ -596,7 +838,8 @@ export function apply(ctx, rawConfig) {
   ctx.tools.register(textTool(
     'sts2_choose',
     'Choose an option in the current screen: map node, reward, card reward, card choice, relic, rest site, ' +
-    'event (including advancing the intro dialogue), shop entry, card bundle, or a crystal-sphere cell/tool. ' +
+    'event (including advancing the intro dialogue), shop entry, card bundle, a crystal-sphere cell/tool, ' +
+    'or a target in phase=target_select (rest-site MEND and similar target pickers; the last index cancels). ' +
     'The option indices come from sts2_state. Use skip=true to skip a card/relic reward.',
     {
       index: { type: 'integer', description: 'Option index from sts2_state.options.' },
@@ -634,7 +877,10 @@ export function apply(ctx, rawConfig) {
     description:
       'Turn autonomous play on or off. When on, this plugin wakes you with the current state whenever ' +
       'the game needs input, until the run ends or you turn it off. Call sts2_autoplay with enabled=true ' +
-      'when the player asks you to take over the game.',
+      'when the player asks you to take over the game. It only arms while a run is in progress: from the ' +
+      'main menu start or resume a run first. The loop ends by itself when the run ends or the game ' +
+      'goes back to the main menu, so call it again after resuming a run. To move the run into a ' +
+      'brand-new conversation use sts2_handoff instead of switching autoplay off by hand.',
     parameters: {
       enabled: { type: 'boolean', required: true, description: 'true to keep playing automatically, false to stop.' },
     },
@@ -642,20 +888,74 @@ export function apply(ctx, rawConfig) {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    timeoutMs: 10000,
+    timeoutMs: 20000,
     async execute(args, exec) {
       if (!args.enabled) {
         autoplay.stop()
         return 'Autoplay is off. The player is in control again.'
       }
       if (!exec.agent) return 'Autoplay needs an agent context; call this tool from a normal session.'
-      autoplay.start(exec.agent)
-      const report = await connectionReport(exec.signal, 4000)
-      if (!report.startsWith('CONNECTED')) {
-        return 'Autoplay is on, but the game is not reachable yet; I will keep retrying.\n' + report
+
+      let state
+      try {
+        state = await readState(exec.signal, 8000)
+      } catch (error) {
+        return `Autoplay stays off: the game is not reachable (${error.message}). ` +
+          'Start the game (or fix the endpoint) and call sts2_autoplay again.'
       }
-      return 'Autoplay is on. ' + report +
-        '\nI will queue the current state whenever the game needs input. Start by reading sts2_state.'
+      if (!state.run) {
+        return `Autoplay stays off: no run is in progress (phase: ${state.phase ?? '?'}). ` +
+          'Start a run with sts2_start_run or resume one with sts2_continue_run, then call ' +
+          'sts2_autoplay again. Polling the main menu from here would keep the bridge busy for ' +
+          'the game and hide the next take-over invitation.'
+      }
+
+      autoplay.start(exec.agent)
+      return `Autoplay is on: ${runSummary(state)} (phase: ${state.phase ?? '?'}). ` +
+        'I will queue the current state whenever the game needs input. Start by reading sts2_state.'
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'sts2_handoff',
+    description:
+      'Hand the run over to a brand-new conversation in this dsh process: this conversation stops ' +
+      'driving the game and the plugin opens an ordinary conversation (exactly like clicking "new ' +
+      'chat") and sends it the take-over prompt. Use it when the player asks to move the game into a ' +
+      'fresh conversation, or when this conversation should stop playing while dsh keeps the run ' +
+      'going. After a successful hand-over do not act on the game from this conversation any more.',
+    parameters: {},
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    timeoutMs: 30000,
+    async execute() {
+      autoplay.stop()
+
+      const result = await takeover.claim()
+      if (result.opened) {
+        return `Handed over to conversation ${result.agent?.id ?? '?'}: it drives the run now. ` +
+          'This conversation must stop acting on the game.'
+      }
+
+      if (result.reason === 'error' || result.reason === 'unsupported') {
+        return `Autoplay is off here, but the new conversation could not be opened: ` +
+          `${String(result.error ?? result.reason)}. Keep playing in this conversation and call ` +
+          'sts2_autoplay again, or check the dsh log for the take-over failure.'
+      }
+      if (result.reason === 'busy') {
+        return 'Autoplay is off here. A take-over attempt is already in flight; the poller will ' +
+          'finish it and open the new conversation.'
+      }
+      if (result.reason === 'already_opened') {
+        return 'Autoplay is off here. A take-over conversation for this run already exists — use ' +
+          'that one, or call sts2_autoplay again to keep playing here.'
+      }
+      return `Autoplay is off here; the game does not offer the run yet (${result.reason}). The ` +
+        'poller retries every few seconds and opens the new conversation as soon as the invitation ' +
+        'is available — the game waits for about 15 s without traffic before offering it. Keep ' +
+        'this conversation off the game in the meantime.'
     },
   }))
 }

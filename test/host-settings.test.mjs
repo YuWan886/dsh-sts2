@@ -60,19 +60,22 @@ test('exposes a Config schema for the sts2 entry', () => {
   const fields = mod.Config.dict
   assert.deepEqual(Object.keys(fields).sort(), [
     'autoPlayPollMs',
+    'autoTakeover',
     'host',
     'port',
     'requestTimeoutMs',
+    'takeoverCwd',
+    'takeoverPollMs',
     'token',
   ])
 })
 
 test('only the endpoint fields are editable live', () => {
   const fields = mod.Config.dict
-  for (const key of ['host', 'port', 'token']) {
+  for (const key of ['host', 'port', 'token', 'takeoverCwd']) {
     assert.equal(fields[key].meta.volatile, true, `${key} must be volatile`)
   }
-  for (const key of ['autoPlayPollMs', 'requestTimeoutMs']) {
+  for (const key of ['autoPlayPollMs', 'requestTimeoutMs', 'autoTakeover', 'takeoverPollMs']) {
     assert.notEqual(fields[key].meta.volatile, true, `${key} only applies on reload`)
   }
 })
@@ -84,7 +87,19 @@ test('resolves the documented defaults', () => {
     token: '',
     autoPlayPollMs: 700,
     requestTimeoutMs: 60000,
+    autoTakeover: true,
+    takeoverPollMs: 4000,
+    takeoverCwd: '',
   })
+})
+
+test('keeps take-over settings coherent', () => {
+  const off = mod.normalizeConfig({ autoTakeover: false })
+  assert.equal(off.autoTakeover, false)
+
+  const clamped = mod.normalizeConfig({ takeoverPollMs: 1, takeoverCwd: '  C:/work  ' })
+  assert.equal(clamped.takeoverPollMs, 1000)
+  assert.equal(clamped.takeoverCwd, 'C:/work')
 })
 
 test('reads live (volatile) fields through get()', () => {

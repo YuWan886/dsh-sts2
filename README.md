@@ -15,6 +15,7 @@
 | `sts2_state` | 当前阶段、角色、血量、金币、遗物、药水、手牌、敌人意图、可选项、状态 token |
 | `sts2_wait` | 阻塞到游戏需要输入（或状态变化），是自动对局的主循环 |
 | `sts2_read` | 按需深读牌堆、遗物、药水、角色、整局、地图、牌组统计、单卡 |
+| `sts2_set_nickname` | 修改 AI 队友的显示昵称（名牌、聊天、提示词同步更新；传空字符串恢复人格名；只读模式也可用） |
 | `sts2_screenshot` | 截取游戏画面（需游戏内开启截图 + 视觉模型） |
 | `sts2_decide` | 回答 `phase=ai_decision` 里挂起的决策（`decision.prompt` / `decision.options` 给出要求的 JSON）。既包括 `controlled.kind=ai` 时 AI 玩家的决策，也包括 `kind=local` 时本地玩家的 `hand_select` 选牌 |
 | `sts2_start_run` | 从主菜单开一局新的单人游戏（角色 / 进阶 / 种子） |
@@ -28,10 +29,11 @@
 | `sts2_use_potion` | 使用药水（`AnyTime` 药水战斗外也能用） |
 | `sts2_discard_potion` | 丢弃药水 |
 | `sts2_end_turn` | 结束回合 |
-| `sts2_choose` | 地图节点 / 奖励 / 卡牌奖励 / 单选 / 遗物 / 篝火 / 事件 / 商店 / 选包 / 水晶球 |
+| `sts2_choose` | 地图节点 / 奖励 / 卡牌奖励 / 单选 / 遗物 / 篝火 / 事件 / 商店 / 选包 / 水晶球 / 选目标（`phase=target_select`，如休息处 MEND；最后一个索引取消） |
 | `sts2_select_cards` | 卡牌选择界面（删牌、升级、变化、附魔、战斗内选牌） |
 | `sts2_proceed` | 继续 / 离开 / 跳过 / 开宝箱 / 确认选包 / 关闭水晶球 / 结束界面 |
-| `sts2_autoplay` | 开启/关闭自动接管：插件会在游戏等待输入时主动唤醒 agent |
+| `sts2_autoplay` | 开启/关闭自动接管：插件会在游戏等待输入时主动唤醒 agent（只在局内生效） |
+| `sts2_handoff` | 把这一局交给一个新对话：本对话停手，插件新建对话并把接管提示词发进去 |
 
 `sts2_autoplay` 是插件独有的能力：它通过 `ctx.agents` 在 agent 空闲时排队一条带当前状态的续玩消息，所以 dsh 不需要玩家每个回合手动说“继续”。
 
@@ -125,6 +127,32 @@ dsh plugin --profile <name> add -w dsh-sts2
 
 之后 dsh 会自己循环：`sts2_wait` → 读状态 → 出牌/选择/回答决策 → 再等待；战斗、地图、奖励、商店、篝火、事件、宝箱全部由它处理。
 
+### 不用再手动开口（自动接管）
+
+开着 dsh 的前提下，多人局里一出现 AI 队友，插件会自己把这一局接过来：
+
+1. 游戏侧在「有 AI 队友、且这段时间没人在驱动」时，通过 `sts2_takeover` 发出邀请（入局后约 30 秒才开始邀请，留给手动接管的窗口）；
+2. 插件每 4 秒轮询一次，认领后**在 dsh 里新建一个普通对话**（cwd = 游戏内设置里的工作区），把首条提示词作为用户消息发进去；
+3. 新对话就像你自己点「新建对话」一样：出现在侧边栏、能实时看、随时能接手打字。
+
+因此不再需要先在 dsh 里开个对话说「来玩杀戮尖塔2」。mod 不负责启动 dsh：没有开着的 dsh，就没有人认领这个邀请。
+
+**同一时刻只有一个对话在驱动这一局。** 插件里只有一个 `autoplay` 循环，谁最后调用 `sts2_autoplay` 谁就是司机：
+
+- 循环还在正常打的时候，插件不会去认领邀请（游戏侧这时也会回 `already_driving`，认领只会白烧一次机会——每局最多 3 次、每次 60 秒）。
+- 循环哑了（模型卡住 / 对话被关掉 / 已经打完这一局）时，邀请就变成**交接**：插件先新建对话，再停掉旧的循环，所以不会有两个对话同时操作游戏。
+- 离开对局（回到主菜单、游戏结束、没有进行中的局）会立刻停掉循环。否则它会在主菜单里空转轮询，让游戏一直以为「有人在驱动」，下一局的邀请（以及「dsh 静默回退」）就都不会触发。
+- `sts2_autoplay` 只在局内生效：在主菜单调用会直接返回「没有进行中的局」，让你先 `sts2_start_run` / `sts2_continue_run`。
+
+想换一个干净的新对话继续玩，让 dsh 调用：
+
+```json
+// sts2_handoff
+{}
+```
+
+它会让本对话停手，并让插件马上认领这一局、新建对话把接管提示词发进去；认领还没来得及（游戏要求约 15 秒安静）时会如实告诉你，后台继续重试。
+
 想收回控制权：
 
 - 让 dsh 调用 `sts2_autoplay { "enabled": false }`；或
@@ -143,6 +171,9 @@ dsh plugin --profile <name> add -w dsh-sts2
     token: ''
     autoPlayPollMs: 700
     requestTimeoutMs: 60000
+    autoTakeover: true
+    takeoverPollMs: 4000
+    takeoverCwd: ''
 ```
 
 | 字段 | 默认 | 说明 |
@@ -152,6 +183,9 @@ dsh plugin --profile <name> add -w dsh-sts2
 | `token` | `''` | 可选的请求 token |
 | `autoPlayPollMs` | `700` | 自动接管的轮询间隔 |
 | `requestTimeoutMs` | `60000` | 单次桥接请求超时 |
+| `autoTakeover` | `true` | AI 队友入局时自动新建对话接管 |
+| `takeoverPollMs` | `4000` | 邀请轮询间隔 |
+| `takeoverCwd` | `''` | 覆盖新对话的工作区（留空则用游戏内设置的工作区） |
 
 修改配置后 dsh 会热重载插件（HMR）。
 

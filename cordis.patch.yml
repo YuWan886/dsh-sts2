@@ -7,3 +7,6 @@
         token: ''
         autoPlayPollMs: 700
         requestTimeoutMs: 60000
+        autoTakeover: true
+        takeoverPollMs: 4000
+        takeoverCwd: ''
