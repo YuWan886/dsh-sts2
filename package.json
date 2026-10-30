@@ -1,6 +1,6 @@
 {
   "name": "dsh-sts2",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "DeepSeek Harness plugin: read and play Slay the Spire 2 through the AiTeammate external-agent bridge.",
   "type": "module",
   "main": "index.js",
@@ -44,7 +44,7 @@
     }
   },
   "engines": {
-    "dsh": ">=0.1.5-rc.1",
+    "dsh": ">=0.2.1-rc.5 <0.3.0",
     "node": ">=22"
   },
   "scripts": {
@@ -57,15 +57,21 @@
     "registry": "https://registry.npmjs.org/"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-attachment": "0.1.5-rc.1",
-    "@deepseek-ai/dsh-llm": "0.1.5-rc.1",
-    "@deepseek-ai/dsh-tools": "0.1.5-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.5",
+    "@deepseek-ai/schemastery": "^3.18.5"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-attachment": { "optional": true },
     "@deepseek-ai/dsh-llm": { "optional": true },
     "@deepseek-ai/dsh-tools": { "optional": true },
     "@deepseek-ai/schemastery": { "optional": true }
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.5",
+    "@deepseek-ai/schemastery": "^3.18.5"
   }
 }

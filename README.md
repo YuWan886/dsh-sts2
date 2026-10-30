@@ -49,7 +49,7 @@
 
 ## 前置条件
 
-1. **dsh** ≥ `0.1.5-rc.1`（本插件按该版本的插件 API 编写）。
+1. **dsh** ≥ `0.2.1-rc.5`（本插件按该版本的插件 API 编写，`engines.dsh` 限定为 `0.2.x`）。
 2. **Slay the Spire 2** + **AiTeammate** Mod（启用外部 Agent 桥接）。
 3. Node.js ≥ 22（dsh 自带即可）。
 
