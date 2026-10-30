@@ -25,6 +25,9 @@ jobs:
       - name: Upgrade npm
         run: npm install -g npm@^11.5.1
 
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
       - name: Verify tag matches package version
         run: |
           pkg="v$(node -p "require('./package.json').version")"
