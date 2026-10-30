@@ -1,16 +1,18 @@
 {
   "name": "dsh-sts2",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "DeepSeek Harness plugin: read and play Slay the Spire 2 through the AiTeammate external-agent bridge.",
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./lib/client.js",
     "./lib/bridge.js": "./lib/bridge.js"
   },
   "files": [
     "index.js",
     "lib/bridge.js",
+    "lib/client.js",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -36,6 +38,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "engines": {
@@ -44,16 +49,23 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check index.js && node --check lib/bridge.js && node --test",
-    "prepack": "node --check index.js && node --check lib/bridge.js && node --test"
+    "check": "node --check index.js && node --check lib/bridge.js && node --check lib/client.js && node --test",
+    "prepack": "node --check index.js && node --check lib/bridge.js && node --check lib/client.js && node --test"
   },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@deepseek-ai/dsh-attachment": "0.1.5-rc.1",
     "@deepseek-ai/dsh-llm": "0.1.5-rc.1",
-    "@deepseek-ai/dsh-tools": "0.1.5-rc.1"
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-attachment": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-tools": { "optional": true },
+    "@deepseek-ai/schemastery": { "optional": true }
   }
 }
