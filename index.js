@@ -38,6 +38,7 @@ const DEFAULT_CONFIG = {
   autoTakeover: true,
   takeoverPollMs: 4000,
   takeoverCwd: '',
+  chatPollMs: 1000,
 }
 
 /**
@@ -65,6 +66,15 @@ const STUCK_DRIVER_MS = 90_000
  * to load with "format v4 message requires a producer-owned source kind".
  */
 const PLUGIN_SOURCE = Object.freeze({ kind: 'plugin:sts2' })
+
+/**
+ * Binds the conversation that last used a tool to the chat relay.
+ *
+ * Any conversation that talks to the game should be able to answer the player's chat, not only the
+ * one that enabled autoplay: the game routes chat to the plugin as soon as the relay polls, and the
+ * relay only polls while a conversation is bound.
+ */
+let noteChatAgent = () => {}
 
 /**
  * Mark one field editable without restarting the plugin.
@@ -99,6 +109,7 @@ export const Config =
         autoTakeover: Schema.boolean().default(DEFAULT_CONFIG.autoTakeover),
         takeoverPollMs: Schema.number().default(DEFAULT_CONFIG.takeoverPollMs),
         takeoverCwd: volatileField(Schema.string().default(DEFAULT_CONFIG.takeoverCwd)),
+        chatPollMs: Schema.number().default(DEFAULT_CONFIG.chatPollMs),
       })
 
 /**
@@ -123,6 +134,7 @@ export function normalizeConfig(config) {
   const poll = Number(read('autoPlayPollMs'))
   const timeout = Number(read('requestTimeoutMs'))
   const takeoverPoll = Number(read('takeoverPollMs'))
+  const chatPoll = Number(read('chatPollMs'))
   return {
     host: String(read('host') || DEFAULT_CONFIG.host),
     port: Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_CONFIG.port,
@@ -134,6 +146,9 @@ export function normalizeConfig(config) {
       ? Math.min(Math.max(takeoverPoll, 1000), 30000)
       : DEFAULT_CONFIG.takeoverPollMs,
     takeoverCwd: String(read('takeoverCwd') ?? '').trim(),
+    chatPollMs: Number.isFinite(chatPoll)
+      ? Math.min(Math.max(chatPoll, 300), 5000)
+      : DEFAULT_CONFIG.chatPollMs,
   }
 }
 
@@ -229,6 +244,7 @@ function textTool(toolName, description, parameters, options = {}) {
     },
     timeoutMs: options.timeoutMs ?? 60000,
     async execute(args, exec) {
+      noteChatAgent(exec.agent)
       const result = await options.bridge.call(toolName, args, {
         signal: exec.signal,
         timeoutMs: options.timeoutMs ?? 60000,
@@ -394,11 +410,97 @@ export function apply(ctx, rawConfig) {
     },
   }
 
+  // ---- Chat relay ---------------------------------------------------------
+  // The chat panel is request/response on the bridge: the mod queues player lines, this loop
+  // long-polls them, injects them into the conversation that drives the run, and the model answers
+  // with sts2_chat_send. Polling only starts once a conversation is bound, and the game only routes
+  // chat while these polls keep arriving — so an old plugin, or a dsh with no conversation driving
+  // the run, leaves the mod's own backend in charge of the chat.
+  const chat = {
+    agent: null,
+    timer: null,
+    busy: false,
+    lastSeq: 0,
+
+    bind(agent) {
+      if (!agent) return
+      this.agent = agent
+      if (this.timer) return
+      const cfg = normalizeConfig(liveConfig())
+      this.timer = setInterval(() => { void this.tick() }, cfg.chatPollMs)
+      this.timer.unref?.()
+    },
+
+    stop() {
+      if (this.timer) clearInterval(this.timer)
+      this.timer = null
+      this.agent = null
+      this.busy = false
+    },
+
+    async tick() {
+      if (!this.agent || this.busy || !bridge.isConnected()) return
+      const agent = this.agent
+      this.busy = true
+      try {
+        const result = await bridge.call(
+          'sts2_chat_poll',
+          { after_seq: this.lastSeq, wait_seconds: 5 },
+          { timeoutMs: 15000 },
+        )
+        const payload = JSON.parse(result.text ?? '{}')
+        const seq = Number(payload.seq)
+        if (Number.isFinite(seq) && seq > this.lastSeq) this.lastSeq = seq
+
+        const messages = Array.isArray(payload.messages) ? payload.messages : []
+        if (messages.length === 0) return
+
+        const lines = messages
+          .map((message) => `#${message.seq} ${message.from ?? 'player'}: ${String(message.text ?? '')}`)
+          .join('\n')
+        const replyTo = messages.map((message) => message.seq).join(', ')
+        const prompt =
+          '<sts2_chat>\n' +
+          'The player wrote in the in-game chat panel:\n' +
+          lines + '\n\n' +
+          `Answer with sts2_chat_send {text, reply_to: <one of ${replyTo}>}. ` +
+          'Do not only answer in this conversation: the player cannot see it.\n' +
+          'If a message contains a tactic, follow it in your next decisions; you may also record it ' +
+          'with the directives argument. If you are in the middle of a turn, finish it first.\n' +
+          '</sts2_chat>'
+
+        agent.followup(createUserMessage({
+          content: [{ type: 'text', text: prompt }],
+          source: PLUGIN_SOURCE,
+        }))
+        logger?.info?.(`chat: forwarded ${messages.length} player line(s) to the conversation`)
+      } catch {
+        // The game may be closed or restarting; the next tick retries.
+      } finally {
+        this.busy = false
+      }
+    },
+  }
+
+  // Any tool call from a conversation binds it: the relay then long-polls player chat and injects
+  // it into that conversation.
+  noteChatAgent = (agent) => {
+    if (agent) chat.bind(agent)
+  }
+
   // Traffic from this process is what makes the game treat the run as driven (`ClientIdleSeconds`).
   // Track it so the take-over poller can tell a live driver from a loop that went quiet, and keep
   // the poller's own invitation requests out of the count — the game treats them as passive too.
+  // Chat polling is passive as well: talking to the player is not playing the run.
   bridge.onRequest = (method) => {
-    if (method !== 'sts2_takeover') autoplay.lastActivityAt = Date.now()
+    if (method !== 'sts2_takeover' && method !== 'sts2_chat_poll') autoplay.lastActivityAt = Date.now()
+  }
+
+  // A reconnect can be a freshly started game, whose chat sequence restarts at 1. Restart the
+  // cursor so new messages are not filtered out by the old high-water mark; the game only returns
+  // messages it has not delivered yet, so a plain socket drop cannot duplicate anything either.
+  bridge.onStatus = () => {
+    chat.lastSeq = 0
   }
 
   // ---- Auto takeover ------------------------------------------------------
@@ -452,6 +554,8 @@ export function apply(ctx, rawConfig) {
 
         const agent = await openTakeoverConversation(ctx, cfg, invite, logger)
         if (runToken) this.done.add(runToken)
+        // The new conversation also answers the in-game chat panel from now on.
+        chat.bind(agent)
         // The previous loop had already been silent long enough for the game to offer the run, so
         // the fresh conversation is the driver now. Retire it only after the new one exists: a
         // failed creation must not leave the run without anyone playing it.
@@ -508,12 +612,15 @@ export function apply(ctx, rawConfig) {
       clearInterval(retryTimer)
       takeover.stop()
       autoplay.stop()
+      chat.stop()
+      noteChatAgent = () => {}
       bridge.dispose()
     }
   }, 'sts2.bridge')
 
   ctx.on('agent/disposed', ({ agent }) => {
     if (agent === autoplay.agent) autoplay.stop()
+    if (agent === chat.agent) chat.stop()
   })
 
   // ---- Read tools ---------------------------------------------------------
@@ -559,7 +666,7 @@ export function apply(ctx, rawConfig) {
       return [
         'CONNECTED to Slay the Spire 2.',
         `  endpoint: ${endpoint()}`,
-        `  bridge: ${hello.bridge_version ?? 'unknown'} (allow_actions: ${hello.allow_actions === true ? 'yes' : 'no'})`,
+        `  bridge: ${hello.bridge_version ?? 'unknown'} (allow_actions: ${hello.allow_actions === true ? 'yes' : 'no'}, chat: ${hello.chat === true ? 'relay' : 'backend-only'})`,
         `  run: ${summary}`,
         `  phase: ${phase} (actionable: ${actionable ? 'yes' : 'no'})`,
         `  controlled: ${controlled}${decision ? `, pending decision: ${decision}` : ''}`,
@@ -700,6 +807,25 @@ export function apply(ctx, rawConfig) {
       },
     },
     { bridge, timeoutMs: 30000 },
+  ))
+
+  ctx.tools.register(textTool(
+    'sts2_chat_send',
+    'Send a line to the Slay the Spire 2 in-game chat panel (the teammate chat box). Answer player ' +
+    'messages with reply_to set to the #seq from the <sts2_chat> block; replying only in this ' +
+    'conversation is invisible to the player. directives optionally records a tactic, nickname ' +
+    'renames the AI teammate.',
+    {
+      text: { type: 'string', required: true, description: 'The line the player sees in the chat panel.' },
+      reply_to: { type: 'integer', description: 'seq of the <sts2_chat> message you are answering.' },
+      directives: {
+        type: 'array',
+        description: 'Optional tactics to record, e.g. {"type":"focus_target","accepted":true,"summary":"focus the left one","target":"Jaw Worm"}.',
+        items: { type: 'object', additionalProperties: true },
+      },
+      nickname: { type: 'string', description: 'Optional new AI teammate display name (max 24 chars).' },
+    },
+    { bridge, timeoutMs: 20000 },
   ))
 
   ctx.tools.register(textTool(
@@ -911,6 +1037,7 @@ export function apply(ctx, rawConfig) {
       }
 
       autoplay.start(exec.agent)
+      chat.bind(exec.agent)
       return `Autoplay is on: ${runSummary(state)} (phase: ${state.phase ?? '?'}). ` +
         'I will queue the current state whenever the game needs input. Start by reading sts2_state.'
     },

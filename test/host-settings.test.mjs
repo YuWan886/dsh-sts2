@@ -61,6 +61,7 @@ test('exposes a Config schema for the sts2 entry', () => {
   assert.deepEqual(Object.keys(fields).sort(), [
     'autoPlayPollMs',
     'autoTakeover',
+    'chatPollMs',
     'host',
     'port',
     'requestTimeoutMs',
@@ -75,7 +76,7 @@ test('only the endpoint fields are editable live', () => {
   for (const key of ['host', 'port', 'token', 'takeoverCwd']) {
     assert.equal(fields[key].meta.volatile, true, `${key} must be volatile`)
   }
-  for (const key of ['autoPlayPollMs', 'requestTimeoutMs', 'autoTakeover', 'takeoverPollMs']) {
+  for (const key of ['autoPlayPollMs', 'requestTimeoutMs', 'autoTakeover', 'takeoverPollMs', 'chatPollMs']) {
     assert.notEqual(fields[key].meta.volatile, true, `${key} only applies on reload`)
   }
 })
@@ -90,6 +91,7 @@ test('resolves the documented defaults', () => {
     autoTakeover: true,
     takeoverPollMs: 4000,
     takeoverCwd: '',
+    chatPollMs: 1000,
   })
 })
 

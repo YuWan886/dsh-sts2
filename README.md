@@ -18,6 +18,7 @@
 | `sts2_set_nickname` | 修改 AI 队友的显示昵称（名牌、聊天、提示词同步更新；传空字符串恢复人格名；只读模式也可用） |
 | `sts2_screenshot` | 截取游戏画面（需游戏内开启截图 + 视觉模型） |
 | `sts2_decide` | 回答 `phase=ai_decision` 里挂起的决策（`decision.prompt` / `decision.options` 给出要求的 JSON）。既包括 `controlled.kind=ai` 时 AI 玩家的决策，也包括 `kind=local` 时本地玩家的 `hand_select` 选牌 |
+| `sts2_chat_send` | 在游戏聊天面板里发言；用 `reply_to` 回答玩家消息（`seq` 来自插件自动注入的 `<sts2_chat>` 块），`directives` 可记录战术指令，`nickname` 可改 AI 昵称 |
 | `sts2_start_run` | 从主菜单开一局新的单人游戏（角色 / 进阶 / 种子） |
 | `sts2_continue_run` | 读取存档继续 |
 | `sts2_pause` | 打开暂停菜单（单人爬塔/AI 队友模式下同时挂起自动化） |
@@ -47,6 +48,15 @@
 | `ai` | 「AI 独自爬塔」开启；多人局里有 AI 队友 | 内置 AI 的决策改由 dsh 给出：`phase=ai_decision` 时用 `sts2_decide` 回答，mod 负责执行 |
 
 两种模式下 `sts2_wait` + `sts2_autoplay` 的循环完全一样；`sts2_state` 的 `notes` 会提示当前该用哪一类工具。
+
+### 游戏内聊天
+
+开着 dsh 玩的时候，游戏聊天面板里的玩家发言由 **dsh 回复**，而不是 mod 自带的后端：
+
+- 插件在 `sts2_autoplay` 开启（或自动接管创建了新对话）后开始轮询 `sts2_chat_poll`，把玩家发言以 `<sts2_chat>` 消息注入当前对话；
+- 模型需要调用 `sts2_chat_send` 才能让玩家看到回复（只在对话里打字玩家看不到）；
+- 聊天里的战术要求会进入 dsh 的对话上下文，同时 mod 会把它附在后续决策提示词里，所以“先打左边”之类的话会实际影响出牌；
+- 插件没在轮询（旧版插件 / 没绑定对话）时，mod 自动回到自带后端；dsh 超时或断开也会回退，聊天不会卡住。
 
 
 ## 前置条件
@@ -174,6 +184,7 @@ dsh plugin --profile <name> add -w dsh-sts2
     autoTakeover: true
     takeoverPollMs: 4000
     takeoverCwd: ''
+    chatPollMs: 1000
 ```
 
 | 字段 | 默认 | 说明 |
@@ -186,6 +197,7 @@ dsh plugin --profile <name> add -w dsh-sts2
 | `autoTakeover` | `true` | AI 队友入局时自动新建对话接管 |
 | `takeoverPollMs` | `4000` | 邀请轮询间隔 |
 | `takeoverCwd` | `''` | 覆盖新对话的工作区（留空则用游戏内设置的工作区） |
+| `chatPollMs` | `1000` | 聊天中继的轮询间隔（插件只用它决定何时发起下一轮长轮询） |
 
 修改配置后 dsh 会热重载插件（HMR）。
 
@@ -196,7 +208,8 @@ dsh 进程
   dsh-sts2 插件
     ├─ ctx.tools.register(sts2_*)
     ├─ TCP 客户端 ── 127.0.0.1:<port> ──> AiTeammate Mod
-    └─ autoplay 定时器 → ctx.agents.followup()
+    ├─ autoplay 定时器 → ctx.agents.followup()
+    └─ chat 定时器 → sts2_chat_poll → ctx.agents.followup() → sts2_chat_send
 ```
 
 协议（行分隔 JSON，UTF-8）：
