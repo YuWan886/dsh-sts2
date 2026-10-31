@@ -4,7 +4,7 @@
 
 本仓库是独立的 dsh 插件（npm 包 `dsh-sts2`）。游戏侧的桥接由 **AiTeammate** Mod 提供：
 
-- Mod 仓库：[YuWan886/AiTeammate](https://github.com/YuWan886/AiTeammate)（[开发文档](https://github.com/YuWan886/AiTeammate/blob/main/docs/dsh-agent-bridge.md)）
+- Mod 仓库：[YuWan886/STS2-AiTeammate](https://github.com/YuWan886/STS2-AiTeammate)（[开发文档](https://github.com/YuWan886/STS2-AiTeammate/blob/main/docs/dsh-agent-bridge.md)）
 - 插件通过 `127.0.0.1` 上的行 JSON TCP 协议与游戏通信，不经过公网。
 
 ## 功能
