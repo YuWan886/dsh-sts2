@@ -1,6 +1,6 @@
 {
   "name": "dsh-sts2",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "DeepSeek Harness plugin: read and play Slay the Spire 2 through the AiTeammate external-agent bridge.",
   "type": "module",
   "main": "index.js",

@@ -136,6 +136,13 @@ test('registers every tool without a settings service', async () => {
     for (const name of ['sts2_pause', 'sts2_resume', 'sts2_save', 'sts2_quit_to_menu', 'sts2_abandon']) {
       assert.ok(names.includes(name), `${name} registered`)
     }
+    assert.ok(names.includes('sts2_start_run'))
+    assert.ok(names.includes('sts2_host'), 'sts2_host registered')
+    const modes = ['standard', 'daily', 'custom']
+    assert.deepEqual(tools.find((tool) => tool.name === 'sts2_host').parameters.properties.mode.enum, modes)
+    const startRun = tools.find((tool) => tool.name === 'sts2_start_run')
+    assert.deepEqual(startRun.parameters.properties.mode.enum, modes)
+    assert.equal(startRun.parameters.properties.modifiers.type, 'array')
   })
 })
 

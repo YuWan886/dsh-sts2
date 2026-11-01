@@ -19,7 +19,8 @@
 | `sts2_screenshot` | 截取游戏画面（需游戏内开启截图 + 视觉模型） |
 | `sts2_decide` | 回答 `phase=ai_decision` 里挂起的决策（`decision.prompt` / `decision.options` 给出要求的 JSON）。既包括 `controlled.kind=ai` 时 AI 玩家的决策，也包括 `kind=local` 时本地玩家的 `hand_select` 选牌 |
 | `sts2_chat_send` | 在游戏聊天面板里发言；用 `reply_to` 回答玩家消息（`seq` 来自插件自动注入的 `<sts2_chat>` 块），`directives` 可记录战术指令，`nickname` 可改 AI 昵称 |
-| `sts2_start_run` | 从主菜单开一局新的单人游戏（角色 / 进阶 / 种子） |
+| `sts2_start_run` | 从干净的主菜单开一局游戏：`mode` 选 `standard`（普通局，可带角色 / 进阶 / 种子 / `modifiers`）、`custom`（自己的种子 / 进阶 / 角色 + `modifiers`）、`daily`（今日每日挑战：用游戏时间服务器取日期，种子 `dd_MM_yyyy_1p`，角色 / 进阶固定，游戏规则摇 2 好 1 坏 modifier；忽略 `character` / `ascension` / `seed` / `modifiers`） |
+| `sts2_host` | 从干净的主菜单开一个多人大厅：`mode` = `standard` / `daily` / `custom`。daily / custom 大厅会自动加入 AI 队友并置为准备，标准大厅则在 `options` 里给出「加入 AI 队友」选项；开好后用 `sts2_choose` 选角 / 勾 modifier / 开始，`sts2_proceed` 退回 |
 | `sts2_continue_run` | 读取存档继续 |
 | `sts2_pause` | 打开暂停菜单（单人爬塔/AI 队友模式下同时挂起自动化） |
 | `sts2_resume` | 关闭暂停菜单并恢复 |
@@ -30,13 +31,36 @@
 | `sts2_use_potion` | 使用药水（`AnyTime` 药水战斗外也能用） |
 | `sts2_discard_potion` | 丢弃药水 |
 | `sts2_end_turn` | 结束回合 |
-| `sts2_choose` | 地图节点 / 奖励 / 卡牌奖励 / 单选 / 遗物 / 篝火 / 事件 / 商店 / 选包 / 水晶球 / 选目标（`phase=target_select`，如休息处 MEND；最后一个索引取消） |
+| `sts2_choose` | 地图节点 / 奖励 / 卡牌奖励 / 单选 / 遗物 / 篝火 / 事件 / 商店 / 选包 / 水晶球 / 选目标（`phase=target_select`，如休息处 MEND；最后一个索引取消）/ 主菜单与子菜单按钮 / 选角按钮 / 「加入 AI 队友」 / 自定义 modifier 勾选 / 大厅的 Embark·返回 |
 | `sts2_select_cards` | 卡牌选择界面（删牌、升级、变化、附魔、战斗内选牌） |
-| `sts2_proceed` | 继续 / 离开 / 跳过 / 开宝箱 / 确认选包 / 关闭水晶球 / 结束界面 |
+| `sts2_proceed` | 继续 / 离开 / 跳过 / 开宝箱 / 确认选包 / 关闭水晶球 / 结束界面 / 退出当前菜单或大厅（返回按钮或栈弹出） |
 | `sts2_autoplay` | 开启/关闭自动接管：插件会在游戏等待输入时主动唤醒 agent（只在局内生效） |
 | `sts2_handoff` | 把这一局交给一个新对话：本对话停手，插件新建对话并把接管提示词发进去 |
 
 `sts2_autoplay` 是插件独有的能力：它通过 `ctx.agents` 在 agent 空闲时排队一条带当前状态的续玩消息，所以 dsh 不需要玩家每个回合手动说“继续”。
+
+### 菜单 / 大厅
+
+主菜单、子菜单和三种开局大厅现在都能直接操作，`sts2_state` 用 `phase` 区分：
+
+| `phase` | 界面 | 说明 |
+|---|---|---|
+| `menu` | 主菜单或任意非大厅子菜单 | `menu.screen` = `main` / `solo` / `multiplayer` / `host` / `join_friend` / `other`；根菜单还带 `characters`、`can_continue`、`can_start_daily`、`can_start_custom`、`modes`、`modifiers`、`max_ascension`、`save` |
+| `char_select` | 标准（普通对局）的角色选择大厅 | 带 `menu.lobby` |
+| `daily_lobby` | 每日挑战大厅 | 带 `menu.lobby`，含 `daily_time` |
+| `custom_lobby` | 自定义对局大厅 | 带 `menu.lobby` |
+
+`menu.lobby` = `{mode, host, singleplayer, players[], local, ai_in_lobby, can_begin, ascension, seed, daily_time}`，`players[]` 里每人带 `name` / `character` / `character_id` / `ready` / `is_ai` / `is_local`。快照的 `options[]` 会列出当前界面所有可点条目（`kind` = `button` / `character` / `modifier` / `ai_join` / `ai_remove`），用 `sts2_choose {index}` 按下去，`sts2_proceed` 退回上一层。弹出模态框时快照不可操作（`blocked_by="modal"`），先按掉它。
+
+三种模式都要在**干净的主菜单**（`phase=menu`、`menu.screen="main"`）上发起：
+
+| 模式 | 怎么开 | 说明 |
+|---|---|---|
+| `standard` | `sts2_host` 开多人大厅，或 `sts2_start_run` 直接单人开局（可带 `modifiers`） | 原版角色选择界面；大厅不会自动加 AI 队友，`options` 里会出现「加入 AI 队友」选项 |
+| `daily` | `sts2_host {"mode":"daily"}` 或 `sts2_start_run {"mode":"daily"}` | 每日挑战：日期取自**游戏的时间服务器**，种子 `dd_MM_yyyy_1p`，角色 / 进阶固定，modifier 由每日规则摇出 **2 好 1 坏**；`character` / `ascension` / `seed` / `modifiers` 全部忽略 |
+| `custom` | `sts2_host {"mode":"custom"}` 或 `sts2_start_run {"mode":"custom", ...}` | 自己指定种子 / 进阶 / 角色，再用 `modifiers`（id 或名字，如 `["Draft","Flight"]`，见 `menu.modifiers`）挑规则；大厅里可以勾选 modifier |
+
+`daily` / `custom` 大厅会自动加入 AI 队友并置为准备，所以只有一个主机也能开始；`standard` 大厅把这步留给玩家（或按「加入 AI 队友」选项）。
 
 ### 两种接管方式
 
@@ -127,7 +151,7 @@ dsh plugin --profile <name> add -w dsh-sts2
 然后按想要的玩法选一局：
 
 - **自己玩**：开一局普通单人游戏（也可以让 dsh 用 `sts2_start_run` / `sts2_continue_run` 开局、续档），多人局里没有 AI 队友时 dsh 打你那份。
-- **给 AI 当大脑**：开「AI 独自爬塔」，或开一局带 AI 队友的多人局。dsh 一连上，内置 AI 的决策就交给 dsh（`sts2_decide`），mod 只保留执行与同步。
+- **给 AI 当大脑**：开「AI 独自爬塔」，或开一局带 AI 队友的多人局（dsh 也能用 `sts2_host` 自己开大厅，`daily` / `custom` 大厅会自动带上 AI 队友）。dsh 一连上，内置 AI 的决策就交给 dsh（`sts2_decide`），mod 只保留执行与同步。
 
 ## 使用
 
@@ -152,7 +176,7 @@ dsh plugin --profile <name> add -w dsh-sts2
 - 循环还在正常打的时候，插件不会去认领邀请（游戏侧这时也会回 `already_driving`，认领只会白烧一次机会——每局最多 3 次、每次 60 秒）。
 - 循环哑了（模型卡住 / 对话被关掉 / 已经打完这一局）时，邀请就变成**交接**：插件先新建对话，再停掉旧的循环，所以不会有两个对话同时操作游戏。
 - 离开对局（回到主菜单、游戏结束、没有进行中的局）会立刻停掉循环。否则它会在主菜单里空转轮询，让游戏一直以为「有人在驱动」，下一局的邀请（以及「dsh 静默回退」）就都不会触发。
-- `sts2_autoplay` 只在局内生效：在主菜单调用会直接返回「没有进行中的局」，让你先 `sts2_start_run` / `sts2_continue_run`。
+- `sts2_autoplay` 只在局内生效：在主菜单调用会直接返回「没有进行中的局」，让你先 `sts2_start_run` / `sts2_host` / `sts2_continue_run`。
 
 想换一个干净的新对话继续玩，让 dsh 调用：
 

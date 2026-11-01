@@ -232,6 +232,8 @@ async function createSessionInProcess(ctx, cwd) {
 
 const SUBJECTS = ['pile', 'relics', 'potions', 'player', 'run', 'map', 'deck_stats', 'card']
 const PILES = ['hand', 'draw', 'discard', 'exhaust', 'deck']
+/** The three game modes a new run or a hosted lobby can be created for. */
+const RUN_MODES = ['standard', 'daily', 'custom']
 
 function textTool(toolName, description, parameters, options = {}) {
   return defineTool({
@@ -830,12 +832,50 @@ export function apply(ctx, rawConfig) {
 
   ctx.tools.register(textTool(
     'sts2_start_run',
-    'Start a new singleplayer run from the main menu (phase=menu). Character ids come from ' +
-    'state.menu.characters; ascension is capped by state.menu.max_ascension. Omit character for a random one.',
+    'Start a new run from the clean main menu (phase=menu). mode picks the kind of run: "standard" is a ' +
+    'normal run with the character/ascension/seed you pass; "custom" is your own seed, ascension and ' +
+    'character plus the modifiers you pass; "daily" is the daily climb for today, which uses the game ' +
+    'time server for the date and the daily rules (fixed character and ascension, 2 good + 1 bad ' +
+    'modifiers rolled by the game rules) and ignores character, ascension, seed and modifiers. ' +
+    'Character ids come from state.menu.characters; ascension is capped by state.menu.max_ascension; ' +
+    'omit character for a random one. modifiers are modifier ids or names from state.menu.modifiers ' +
+    '(e.g. ["Draft", "Flight"]), used by standard and custom runs and ignored in daily. A run only ' +
+    'starts from the clean main menu.',
     {
       character: { type: 'string', description: 'Character id or name; random when omitted.' },
       ascension: { type: 'integer', description: 'Ascension level (0..menu.max_ascension).' },
       seed: { type: 'string', description: 'Optional seed.' },
+      mode: {
+        type: 'string',
+        enum: RUN_MODES,
+        default: 'standard',
+        description: 'Game mode: standard | daily | custom (default standard).',
+      },
+      modifiers: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Modifier ids or names for custom/standard runs, e.g. ["Draft","Flight"]; ignored in daily.',
+      },
+    },
+    { bridge, timeoutMs: 30000 },
+  ))
+
+  ctx.tools.register(textTool(
+    'sts2_host',
+    'Host a multiplayer lobby from the clean main menu (phase=menu). mode picks the lobby: "standard" is ' +
+    'the normal character-select lobby, "daily" is the daily climb for today and "custom" is a custom ' +
+    'run. In daily and custom lobbies the mod automatically adds the AI teammate and marks it ready, so ' +
+    'a lone host can begin; a standard lobby instead exposes an "Add AI teammate (ready)" option. The ' +
+    'call returns once the lobby is open: call sts2_state afterwards (phase becomes char_select / ' +
+    'daily_lobby / custom_lobby), then pick a character, toggle custom modifiers or press Embark with ' +
+    'sts2_choose. sts2_proceed backs out of the lobby / menu.',
+    {
+      mode: {
+        type: 'string',
+        enum: RUN_MODES,
+        default: 'standard',
+        description: 'Game mode to host: standard | daily | custom (default standard).',
+      },
     },
     { bridge, timeoutMs: 30000 },
   ))
@@ -965,8 +1005,10 @@ export function apply(ctx, rawConfig) {
     'sts2_choose',
     'Choose an option in the current screen: map node, reward, card reward, card choice, relic, rest site, ' +
     'event (including advancing the intro dialogue), shop entry, card bundle, a crystal-sphere cell/tool, ' +
-    'or a target in phase=target_select (rest-site MEND and similar target pickers; the last index cancels). ' +
-    'The option indices come from sts2_state. Use skip=true to skip a card/relic reward.',
+    'a target in phase=target_select (rest-site MEND and similar target pickers; the last index cancels), ' +
+    'or any pressable item on the main menu and lobby screens: menu/submenu buttons, character-select ' +
+    'character buttons, the "Add AI teammate" option, custom-run modifier toggles and lobby ' +
+    'Embark/Back buttons. The option indices come from sts2_state. Use skip=true to skip a card/relic reward.',
     {
       index: { type: 'integer', description: 'Option index from sts2_state.options.' },
       skip: { type: 'boolean', description: 'Skip instead of choosing (card reward / card choice / relic screen).' },
@@ -993,7 +1035,8 @@ export function apply(ctx, rawConfig) {
     'sts2_proceed',
     'Advance the current screen: leave rewards, skip a card/relic reward, continue an event page, ' +
     'close the shop shelf, leave a room, open a treasure chest, confirm a bundle pick, close the ' +
-    'crystal sphere, or advance the game-over screen.',
+    'crystal sphere, advance the game-over screen, or leave the current menu/lobby (back button or ' +
+    'stack pop, e.g. back out of a hosted lobby to the main menu).',
     {},
     { bridge, timeoutMs: 30000 },
   ))
@@ -1004,7 +1047,8 @@ export function apply(ctx, rawConfig) {
       'Turn autonomous play on or off. When on, this plugin wakes you with the current state whenever ' +
       'the game needs input, until the run ends or you turn it off. Call sts2_autoplay with enabled=true ' +
       'when the player asks you to take over the game. It only arms while a run is in progress: from the ' +
-      'main menu start or resume a run first. The loop ends by itself when the run ends or the game ' +
+      'main menu start a run with sts2_start_run, host a lobby with sts2_host, or resume a save with ' +
+      'sts2_continue_run first. The loop ends by itself when the run ends or the game ' +
       'goes back to the main menu, so call it again after resuming a run. To move the run into a ' +
       'brand-new conversation use sts2_handoff instead of switching autoplay off by hand.',
     parameters: {
@@ -1031,9 +1075,9 @@ export function apply(ctx, rawConfig) {
       }
       if (!state.run) {
         return `Autoplay stays off: no run is in progress (phase: ${state.phase ?? '?'}). ` +
-          'Start a run with sts2_start_run or resume one with sts2_continue_run, then call ' +
-          'sts2_autoplay again. Polling the main menu from here would keep the bridge busy for ' +
-          'the game and hide the next take-over invitation.'
+          'Start a run with sts2_start_run, host a lobby with sts2_host, or resume the save with ' +
+          'sts2_continue_run, then call sts2_autoplay again. Polling the main menu from here would ' +
+          'keep the bridge busy for the game and hide the next take-over invitation.'
       }
 
       autoplay.start(exec.agent)
