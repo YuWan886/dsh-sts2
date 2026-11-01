@@ -18,7 +18,7 @@
 | `sts2_set_nickname` | 修改 AI 队友的显示昵称（名牌、聊天、提示词同步更新；传空字符串恢复人格名；只读模式也可用） |
 | `sts2_screenshot` | 截取游戏画面（需游戏内开启截图 + 视觉模型） |
 | `sts2_decide` | 回答 `phase=ai_decision` 里挂起的决策（`decision.prompt` / `decision.options` 给出要求的 JSON）。既包括 `controlled.kind=ai` 时 AI 玩家的决策，也包括 `kind=local` 时本地玩家的 `hand_select` 选牌 |
-| `sts2_chat_send` | 在游戏聊天面板里发言；用 `reply_to` 回答玩家消息（`seq` 来自插件自动注入的 `<sts2_chat>` 块），`directives` 可记录战术指令，`nickname` 可改 AI 昵称 |
+| `sts2_chat_send` | 在游戏聊天面板里发言；用 `reply_to` 回答玩家消息（`seq` 来自插件注入的 `<sts2_chat>` 块或状态快照的 `chat.pending[].seq`，不存在的 seq 会被拒绝并回传待回复列表），`directives` 可记录战术指令，`nickname` 可改 AI 昵称 |
 | `sts2_start_run` | 从干净的主菜单开一局游戏：`mode` 选 `standard`（普通局，可带角色 / 进阶 / 种子 / `modifiers`）、`custom`（自己的种子 / 进阶 / 角色 + `modifiers`）、`daily`（今日每日挑战：用游戏时间服务器取日期，种子 `dd_MM_yyyy_1p`，角色 / 进阶固定，游戏规则摇 2 好 1 坏 modifier；忽略 `character` / `ascension` / `seed` / `modifiers`） |
 | `sts2_host` | 从干净的主菜单开一个多人大厅：`mode` = `standard` / `daily` / `custom`。daily / custom 大厅会自动加入 AI 队友并置为准备，标准大厅则在 `options` 里给出「加入 AI 队友」选项；开好后用 `sts2_choose` 选角 / 勾 modifier / 开始，`sts2_proceed` 退回 |
 | `sts2_continue_run` | 读取存档继续 |
@@ -77,8 +77,8 @@
 
 开着 dsh 玩的时候，游戏聊天面板里的玩家发言由 **dsh 回复**，而不是 mod 自带的后端：
 
-- 插件在 `sts2_autoplay` 开启（或自动接管创建了新对话）后开始轮询 `sts2_chat_poll`，把玩家发言以 `<sts2_chat>` 消息注入当前对话；
-- 模型需要调用 `sts2_chat_send` 才能让玩家看到回复（只在对话里打字玩家看不到）；
+- 插件在 `sts2_autoplay` 开启（或自动接管创建了新对话）后开始轮询 `sts2_chat_poll`，把玩家发言以 `<sts2_chat>` 消息 **`steer()` 到当前回合**（不是排到下一轮的 `followup()`；自动驾驶一轮常常持续整局，排队会让玩家等不到回复）；
+- 模型需要调用 `sts2_chat_send` 才能让玩家看到回复（只在对话里打字玩家看不到）；`reply_to` 用 `<sts2_chat>` 里的 `#seq`，或者状态快照的 `chat.pending[].seq`（mod 会拒绝不存在的 seq 并回传仍待回复的 seq 列表）；
 - 聊天里的战术要求会进入 dsh 的对话上下文，同时 mod 会把它附在后续决策提示词里，所以“先打左边”之类的话会实际影响出牌；
 - 插件没在轮询（旧版插件 / 没绑定对话）时，mod 自动回到自带后端；dsh 超时或断开也会回退，聊天不会卡住。
 
@@ -233,7 +233,7 @@ dsh 进程
     ├─ ctx.tools.register(sts2_*)
     ├─ TCP 客户端 ── 127.0.0.1:<port> ──> AiTeammate Mod
     ├─ autoplay 定时器 → ctx.agents.followup()
-    └─ chat 定时器 → sts2_chat_poll → ctx.agents.followup() → sts2_chat_send
+    └─ chat 定时器 → sts2_chat_poll → agent.steer() → sts2_chat_send
 ```
 
 协议（行分隔 JSON，UTF-8）：

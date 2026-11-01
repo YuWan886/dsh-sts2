@@ -418,6 +418,24 @@ export function apply(ctx, rawConfig) {
   // with sts2_chat_send. Polling only starts once a conversation is bound, and the game only routes
   // chat while these polls keep arriving — so an old plugin, or a dsh with no conversation driving
   // the run, leaves the mod's own backend in charge of the chat.
+  /**
+   * Deliver a chat block into the conversation that drives the run.
+   *
+   * `steer()` splices it into the *running* turn at its next step, which is what makes dsh answer
+   * while it is still playing. `followup()` would queue it for the next turn instead, and an
+   * autoplay turn can stay open for the whole run: that is exactly how a player line ended up
+   * waiting minutes, the mod timed out and answered with its own backend, and the model answered
+   * from the state snapshot with a guessed reply_to. Older dsh builds keep the followup fallback.
+   */
+  function pushChatLine(agent, text) {
+    const message = createUserMessage({
+      content: [{ type: 'text', text }],
+      source: PLUGIN_SOURCE,
+    })
+    if (typeof agent.steer === 'function') agent.steer(message)
+    else agent.followup(message)
+  }
+
   const chat = {
     agent: null,
     timer: null,
@@ -465,16 +483,13 @@ export function apply(ctx, rawConfig) {
           '<sts2_chat>\n' +
           'The player wrote in the in-game chat panel:\n' +
           lines + '\n\n' +
-          `Answer with sts2_chat_send {text, reply_to: <one of ${replyTo}>}. ` +
-          'Do not only answer in this conversation: the player cannot see it.\n' +
+          `Answer with sts2_chat_send {text, reply_to: <one of ${replyTo}>} now — do not defer it ` +
+          'to the end of the run. The player cannot see this conversation, only the chat panel.\n' +
           'If a message contains a tactic, follow it in your next decisions; you may also record it ' +
-          'with the directives argument. If you are in the middle of a turn, finish it first.\n' +
+          'with the directives argument. Then carry on with the game.\n' +
           '</sts2_chat>'
 
-        agent.followup(createUserMessage({
-          content: [{ type: 'text', text: prompt }],
-          source: PLUGIN_SOURCE,
-        }))
+        pushChatLine(agent, prompt)
         logger?.info?.(`chat: forwarded ${messages.length} player line(s) to the conversation`)
       } catch {
         // The game may be closed or restarting; the next tick retries.
@@ -814,9 +829,10 @@ export function apply(ctx, rawConfig) {
   ctx.tools.register(textTool(
     'sts2_chat_send',
     'Send a line to the Slay the Spire 2 in-game chat panel (the teammate chat box). Answer player ' +
-    'messages with reply_to set to the #seq from the <sts2_chat> block; replying only in this ' +
-    'conversation is invisible to the player. directives optionally records a tactic, nickname ' +
-    'renames the AI teammate.',
+    'messages with reply_to set to the #seq from the <sts2_chat> block, or to state.chat.pending[].seq ' +
+    'when the state snapshot announced the chat; a reply_to that is not a live pending seq is refused ' +
+    'with the seqs that are. Replying only in this conversation is invisible to the player. directives ' +
+    'optionally records a tactic, nickname renames the AI teammate.',
     {
       text: { type: 'string', required: true, description: 'The line the player sees in the chat panel.' },
       reply_to: { type: 'integer', description: 'seq of the <sts2_chat> message you are answering.' },
