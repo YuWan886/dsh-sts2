@@ -275,3 +275,45 @@ test('reports why a hand-over had to wait instead of pretending it happened', as
     await fake.close()
   }
 })
+
+test('injects a pending decision as readable text, not as an escaped JSON blob', async () => {
+  const game = {
+    state: {
+      phase: 'ai_decision',
+      actionable: true,
+      token: 'd1',
+      run: { character: 'Ironclad', act: 2, floor: 12, hp: 33, max_hp: 80, gold: 210 },
+      controlled: { kind: 'ai', name: 'AI' },
+      decision: {
+        id: 'd7',
+        kind: 'combat',
+        player: 'Ironclad',
+        max_wait_seconds: 90,
+        system_prompt: 'SYSTEM-RULES',
+        prompt: 'COMBAT-TASK: play cards',
+      },
+      last_decision: { id: 'd6', requested: ['Strike->Jaw Worm'], dropped: ['Bash: 不在手牌'], valid: 1 },
+      ai_notes: ['Go poison this act'],
+    },
+    take: { take: false, reason: 'already_driving' },
+  }
+  const fake = await startFakeGame(game)
+  const host = startHost(fake.port, sessionControllerFor([]))
+  const driver = drivingAgent()
+
+  try {
+    await host.tools.get('sts2_autoplay').execute({ enabled: true }, { agent: driver.agent })
+    assert.ok(await waitFor(() => driver.prompts.length >= 1), 'the loop woke the agent')
+
+    const text = driver.prompts[0].content[0].text
+    assert.match(text, /Pending decision: combat \(d7\)/)
+    assert.match(text, /SYSTEM-RULES/)
+    assert.match(text, /COMBAT-TASK: play cards/)
+    assert.match(text, /previous decision was processed/)
+    assert.match(text, /Go poison this act/)
+    assert.doesNotMatch(text, /"prompt":"COMBAT-TASK/, 'the prompt is not embedded as escaped JSON')
+  } finally {
+    host.dispose()
+    await fake.close()
+  }
+})

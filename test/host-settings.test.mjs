@@ -86,7 +86,7 @@ test('resolves the documented defaults', () => {
     host: '127.0.0.1',
     port: 26333,
     token: '',
-    autoPlayPollMs: 700,
+    autoPlayPollMs: 300,
     requestTimeoutMs: 60000,
     autoTakeover: true,
     takeoverPollMs: 4000,

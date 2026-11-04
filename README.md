@@ -12,9 +12,10 @@
 | 工具 | 作用 |
 |---|---|
 | `sts2_status` | 连接自检：返回 CONNECTED / NOT CONNECTED、端点、是否允许操作、当前局进度 |
-| `sts2_state` | 当前阶段、角色、血量、金币、遗物、药水、手牌、敌人意图、可选项、状态 token |
-| `sts2_wait` | 阻塞到游戏需要输入（或状态变化），是自动对局的主循环 |
+| `sts2_state` | 当前阶段、角色、血量、金币、遗物、药水、手牌、敌人意图、可选项、状态 token；`detail=delta` 只回上次快照以来的变化字段 |
+| `sts2_wait` | 阻塞到游戏需要输入（或状态变化），是自动对局的主循环；`detail=delta` 只回变化字段 |
 | `sts2_read` | 按需深读牌堆、遗物、药水、角色、整局、地图、牌组统计、单卡 |
+| `sts2_note` | 记录本局长期笔记（构筑方向 / Boss 对策 / 想买的遗物），mod 按本局保存并注入后续决策提示词与快照 |
 | `sts2_set_nickname` | 修改 AI 队友的显示昵称（名牌、聊天、提示词同步更新；传空字符串恢复人格名；只读模式也可用） |
 | `sts2_screenshot` | 截取游戏画面（需游戏内开启截图 + 视觉模型） |
 | `sts2_decide` | 回答 `phase=ai_decision` 里挂起的决策（`decision.prompt` / `decision.options` 给出要求的 JSON）。既包括 `controlled.kind=ai` 时 AI 玩家的决策，也包括 `kind=local` 时本地玩家的 `hand_select` 选牌 |
@@ -203,7 +204,7 @@ dsh plugin --profile <name> add -w dsh-sts2
     host: '127.0.0.1'
     port: 26333
     token: ''
-    autoPlayPollMs: 700
+    autoPlayPollMs: 300
     requestTimeoutMs: 60000
     autoTakeover: true
     takeoverPollMs: 4000
@@ -216,7 +217,7 @@ dsh plugin --profile <name> add -w dsh-sts2
 | `host` | `127.0.0.1` | 游戏桥接地址，只支持本机 |
 | `port` | `26333` | 与游戏内设置一致 |
 | `token` | `''` | 可选的请求 token |
-| `autoPlayPollMs` | `700` | 自动接管的轮询间隔 |
+| `autoPlayPollMs` | `300` | 自动接管的轮询间隔 |
 | `requestTimeoutMs` | `60000` | 单次桥接请求超时 |
 | `autoTakeover` | `true` | AI 队友入局时自动新建对话接管 |
 | `takeoverPollMs` | `4000` | 邀请轮询间隔 |

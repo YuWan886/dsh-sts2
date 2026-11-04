@@ -33,7 +33,7 @@ const DEFAULT_CONFIG = {
   host: '127.0.0.1',
   port: 26333,
   token: '',
-  autoPlayPollMs: 700,
+  autoPlayPollMs: 300,
   requestTimeoutMs: 60000,
   autoTakeover: true,
   takeoverPollMs: 4000,
@@ -256,6 +256,57 @@ function textTool(toolName, description, parameters, options = {}) {
   })
 }
 
+/**
+ * Prompt the autoplay poller injects when the game needs input.
+ *
+ * An `ai_decision` snapshot carries the full decision prompt the mod built for the built-in model.
+ * Sending it as plain text (instead of embedding the whole state JSON, where the prompt arrives
+ * escaped as one big string) reads better, saves tokens and keeps the model on the actual task.
+ * The rest of the state is still available on demand through sts2_state.
+ */
+function buildAutoplayPrompt(state, stateText) {
+  const lines = [
+    '<sts2_autoplay>',
+    `The game is waiting for you (phase: ${state.phase}, token: ${state.token}).`,
+  ]
+
+  if (state.run) {
+    const run = state.run
+    lines.push(`Run: ${run.character ?? '?'} · act ${run.act} floor ${run.floor} · ` +
+      `HP ${run.hp}/${run.max_hp} · ${run.gold} gold`)
+  }
+  if (Array.isArray(state.notes) && state.notes.length > 0) {
+    lines.push('Notes from the game:')
+    for (const note of state.notes) lines.push(`- ${note}`)
+  }
+
+  if (state.phase === 'ai_decision' && state.decision) {
+    const decision = state.decision
+    lines.push('', `Pending decision: ${decision.kind} (${decision.id}) for ${decision.player ?? 'the AI player'}.`)
+    if (decision.max_wait_seconds) {
+      lines.push(`Answer within ${decision.max_wait_seconds}s; after that the game falls back to its own AI.`)
+    }
+    if (decision.system_prompt) lines.push('', decision.system_prompt)
+    lines.push('', decision.prompt ?? '')
+    if (decision.options) lines.push('', 'decision.options:', JSON.stringify(decision.options))
+    if (state.last_decision) {
+      lines.push('', 'Your previous decision was processed like this:', JSON.stringify(state.last_decision))
+    }
+    if (Array.isArray(state.ai_notes) && state.ai_notes.length > 0) {
+      lines.push('', 'Your run notes:')
+      for (const note of state.ai_notes) lines.push(`- ${note}`)
+    }
+    lines.push('',
+      'Answer with sts2_decide {decision}: pass exactly the JSON object the prompt above asks for. ' +
+      'You may call sts2_state / sts2_read first, but do not waste the wait budget.',
+      '</sts2_autoplay>')
+    return lines.join('\n')
+  }
+
+  lines.push('Continue playing with the sts2_* tools. Current state:', stateText, '</sts2_autoplay>')
+  return lines.join('\n')
+}
+
 export function apply(ctx, rawConfig) {
   const config = normalizeConfig(rawConfig)
   const bridge = new Bridge(config)
@@ -389,16 +440,7 @@ export function apply(ctx, rawConfig) {
 
         this.lastToken = state.token
         this.lastPromptAt = now
-        const hint = state.phase === 'ai_decision'
-          ? 'A decision is waiting: answer it with sts2_decide. ' +
-            'decision.prompt / decision.options hold the exact task and JSON shape.'
-          : 'Continue playing with the sts2_* tools. Current state:'
-        const prompt =
-          '<sts2_autoplay>\n' +
-          `The game is waiting for you (phase: ${state.phase}, token: ${state.token}).\n` +
-          hint + '\n' +
-          result.text + '\n' +
-          '</sts2_autoplay>'
+        const prompt = buildAutoplayPrompt(state, result.text)
 
         agent.followup(createUserMessage({
           content: [{ type: 'text', text: prompt }],
@@ -726,8 +768,15 @@ export function apply(ctx, rawConfig) {
   ctx.tools.register(textTool(
     'sts2_state',
     'Return the current Slay the Spire 2 state: phase, run, combat, options and a token. ' +
-    'Call this first; pass the returned token to sts2_wait.',
-    {},
+    'Call this first; pass the returned token to sts2_wait. detail=delta returns only the fields ' +
+    'that changed since the last snapshot and is useful for cheap re-checks.',
+    {
+      detail: {
+        type: 'string',
+        enum: ['full', 'delta'],
+        description: 'full (default), or delta: only top-level fields changed since the last snapshot.',
+      },
+    },
     { bridge, timeoutMs: 15000 },
   ))
 
@@ -735,10 +784,16 @@ export function apply(ctx, rawConfig) {
     'sts2_wait',
     'Block until the game needs your input (or the state changes). The primary autoplay loop: ' +
     'after each action, call sts2_wait with the token from the previous result. ' +
-    'Returns the new state, or the same state with wait_timed_out=true after the timeout.',
+    'Returns the new state, or the same state with wait_timed_out=true after the timeout. ' +
+    'detail=delta returns only the changed fields.',
     {
       after_token: { type: 'string', description: 'Token from the previous result. Omit to return as soon as the game is actionable.' },
       timeout_seconds: { type: 'integer', description: 'How long to wait (1-50, default 25).' },
+      detail: {
+        type: 'string',
+        enum: ['full', 'delta'],
+        description: 'full (default), or delta: only top-level fields changed since the last snapshot.',
+      },
     },
     { bridge, timeoutMs: 60000 },
   ))
@@ -755,6 +810,17 @@ export function apply(ctx, rawConfig) {
       detail: { type: 'string', enum: ['brief', 'full'], description: 'Pile detail level.' },
     },
     { bridge, timeoutMs: 20000 },
+  ))
+
+  ctx.tools.register(textTool(
+    'sts2_note',
+    'Save a short note about this run (deck plan, boss plan, key relics, a relic/shop target, ...). ' +
+    'The mod keeps the notes for the current run and shows them back in later decision prompts and ' +
+    'snapshots, so a plan survives your own context compaction and a game restart.',
+    {
+      text: { type: 'string', required: true, description: 'Note text, at most 300 characters.' },
+    },
+    { bridge, timeoutMs: 15000 },
   ))
 
   ctx.tools.register(textTool(
